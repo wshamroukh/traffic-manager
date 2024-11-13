@@ -1,0 +1,104 @@
+rg=atm-appsvc
+location1=centralindia
+location2=swedencentral
+
+app1_svc_name=wadApp1-$RANDOM
+app2_svc_name=wadApp2-$RANDOM
+
+atm_name=wadatm-$RANDOM
+
+# Resource Groups
+echo -e "\e[1;36mCreating $rg Resource Group...\e[0m"
+az group create -l $location1 -n $rg -o none
+
+# app1 service
+echo -e "\e[1;36mCreating $app1_svc_name App Service...\e[0m"
+az appservice plan create -g $rg -n $app1_svc_name-Plan --sku P1V3 --location $location1 --is-linux -o none
+az webapp create -g $rg -n $app1_svc_name --plan $app1_svc_name-Plan --container-image-name jelledruyts/inspectorgadget:latest -o none
+app1id=$(az webapp show -g $rg -n $app1_svc_name --query id -o tsv)
+app1fqdn=$(az webapp show -g $rg -n $app1_svc_name --query hostNames[] -o tsv)
+
+# app2 service
+echo -e "\e[1;36mCreating $app2_svc_name App Service...\e[0m"
+az appservice plan create -g $rg -n $app2_svc_name-Plan --sku P1V3 --location $location2 --is-linux -o none
+az webapp create -g $rg -n $app2_svc_name --plan $app2_svc_name-Plan --container-image-name jelledruyts/inspectorgadget:latest -o none
+app2id=$(az webapp show -g $rg -n $app2_svc_name --query id -o tsv)
+app2fqdn=$(az webapp show -g $rg -n $app2_svc_name --query hostNames[] -o tsv)
+
+
+# Create Traffic Manager - Weight
+atm_routing_method=Weighted
+echo -e "\e[1;36mCreating $atm_name Traffic Manager Profile with $atm_routing_method Routing Method...\e[0m"
+az network traffic-manager profile create -g $rg -n $atm_name --routing-method $atm_routing_method --unique-dns-name $atm_name --protocol https --port 443 --path /
+echo -e "\e[1;36mCreating traffic manager endpoints to $app1_svc_name and $app2_svc_name...\e[0m"
+az network traffic-manager endpoint create -g $rg -n $app1_svc_name --profile-name $atm_name --type azureEndpoints --target-resource-id $app1id --endpoint-status Enabled --weight 2
+az network traffic-manager endpoint create -g $rg -n $app2_svc_name --profile-name $atm_name --type azureEndpoints --target-resource-id $app2id --endpoint-status Enabled --weight 1
+atm_fqdn=$(az network traffic-manager profile show -g $rg -n $atm_name --query dnsConfig.fqdn -o tsv)
+echo "try to access now through traffic manager https://$atm_fqdn and notice how the traffic is routed to $app1_svc_name"
+
+# Update the weight value for endpoints
+az network traffic-manager endpoint update -g $rg -n $app1_svc_name --profile-name $atm_name --type azureEndpoints --target-resource-id $app1id --weight 1
+az network traffic-manager endpoint update -g $rg -n $app1_svc_name --profile-name $atm_name --type azureEndpoints --target-resource-id $app1id --weight 2
+
+# Traffic Manager - Function to delete all endpoints
+delete_atm_endpoints() {
+    az network traffic-manager endpoint delete -n $app1_svc_name --profile-name $atm_name -g $rg --type azureEndpoints
+    az network traffic-manager endpoint delete -n $app2_svc_name --profile-name $atm_name -g $rg --type azureEndpoints
+}
+
+echo -e "\e[1;36mDeleting endpoints...\e[0m"
+delete_atm_endpoints
+# Traffic Manager - Update to Performance
+atm_routing_method=Performance
+echo -e "\e[1;36mUpdating routing method to $atm_routing_method on $atm_name Traffic Manager Profile...\e[0m"
+az network traffic-manager profile update -g $rg -n $atm_name --routing-method $atm_routing_method
+az network traffic-manager endpoint create -g $rg -n $app1_svc_name --profile-name $atm_name --type azureEndpoints --target-resource-id $app1id --endpoint-status Enabled --endpoint-location $location1
+az network traffic-manager endpoint create -g $rg -n $app2_svc_name --profile-name $atm_name --type azureEndpoints --target-resource-id $app2id --endpoint-status Enabled --endpoint-location $location2
+
+echo "try to access now through traffic manager https://$atm_fqdn and notice how the traffic is routed to closest app to your country"
+
+
+echo -e "\e[1;36mDeleting endpoints...\e[0m"
+delete_atm_endpoints
+# Traffic Manager - Update to Geographic
+atm_routing_method=Geographic
+echo -e "\e[1;36mUpdating routing method to $atm_routing_method on $atm_name Traffic Manager Profile...\e[0m"
+az network traffic-manager profile update -g $rg -n $atm_name --routing-method $atm_routing_method
+echo -e "\e[1;36mCreating traffic manager endpoints to $app1_svc_name and $app2_svc_name...\e[0m"
+az network traffic-manager endpoint create -g $rg -n $app1_svc_name --profile-name $atm_name --type azureEndpoints --target-resource-id $app1id --endpoint-status Enabled --geo-mapping OM
+az network traffic-manager endpoint create -g $rg -n $app2_svc_name --profile-name $atm_name --type azureEndpoints --target-resource-id $app2id --endpoint-status Enabled --geo-mapping World
+
+echo "try to access now through traffic manager https://$atm_fqdn"
+
+echo -e "\e[1;36mDeleting endpoints...\e[0m"
+delete_atm_endpoints
+az network traffic-manager endpoint create -g $rg -n $app1_svc_name --profile-name $atm_name --type azureEndpoints --target-resource-id $app1id --endpoint-status Enabled --geo-mapping World
+az network traffic-manager endpoint create -g $rg -n $app2_svc_name --profile-name $atm_name --type azureEndpoints --target-resource-id $app2id --endpoint-status Enabled --geo-mapping OM
+
+echo "try to access now through traffic manager https://$atm_fqdn"
+
+echo -e "\e[1;36mDeleting endpoints...\e[0m"
+delete_atm_endpoints
+# Traffic Manager - Update to Priority
+atm_routing_method=Priority
+echo -e "\e[1;36mUpdating routing method to $atm_routing_method on $atm_name Traffic Manager Profile...\e[0m"
+az network traffic-manager profile update -g $rg -n $atm_name --routing-method $atm_routing_method
+echo -e "\e[1;36mCreating traffic manager endpoints to $app1_svc_name and $app2_svc_name...\e[0m"
+az network traffic-manager endpoint create -g $rg -n $app1_svc_name --profile-name $atm_name --type azureEndpoints --target-resource-id $app1id --endpoint-status Enabled --priority 1
+az network traffic-manager endpoint create -g $rg -n $app2_svc_name --profile-name $atm_name --type azureEndpoints --target-resource-id $app2id --endpoint-status Enabled --priority 2
+
+echo "try to access now through traffic manager https://$atm_fqdn
+and notice how the traffic is always served from $app1_svc_name as long as $app1_svc_name is up and running"
+
+# updating traffic manager proping settings
+az network traffic-manager profile update -g $rg -n $atm_name --interval 10 --max-failures 2 --timeout 5
+
+# stopping app1
+az network traffic-manager endpoint create -g $rg -n $app1_svc_name --profile-name $atm_name --type azureEndpoints --target-resource-id $app1id --endpoint-status Disabled
+
+az network traffic-manager endpoint list -g $rg --profile-name $atm_name -o table
+
+echo "try to access now through traffic manager https://$atm_fqdn
+and notice how the traffic is always served from $app1_svc_name as long as $app1_svc_name is up and running"
+
+
